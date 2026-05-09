@@ -2256,11 +2256,29 @@ impl Connection {
     fn update_network_path_or_discard(&mut self, network_path: FourTuple, path_id: PathId) -> bool {
         let remote_may_migrate = self.side.remote_may_migrate(&self.state);
         let local_ip_may_migrate = self.side.is_client();
+        let disable_path_migration = self.config.disable_path_migration;
         // If this packet could initiate a migration and we're a client or a server that
         // forbids migration, drop the datagram. This could be relaxed to heuristically
         // permit NAT-rebinding-like migration.
         if let Some(known_path) = self.path_mut(path_id) {
             if network_path.remote != known_path.network_path.remote && !remote_may_migrate {
+                // Warren F10d fork audit : si `disable_path_migration` est posé,
+                // accepte le packet sur le path existant SANS le drop ni
+                // migrer. Le `known_path.network_path.remote` reste intact.
+                // Empêche le `PATH_RESPONSE` off-path du protocole
+                // `n0_nat_traversal` d'être interprété comme migration
+                // spurieuse → drop → invalidation path principal →
+                // `read_datagram` bloqué jusqu'au `max_idle_timeout`. Cf.
+                // `bench/results/2026-05-09_F10c_resolved_round6.md` § F10d.
+                if disable_path_migration {
+                    trace!(
+                        %path_id,
+                        %network_path,
+                        %known_path.network_path,
+                        "F10d: accepting off-path packet without migration"
+                    );
+                    return false;
+                }
                 trace!(
                     %path_id,
                     %network_path,

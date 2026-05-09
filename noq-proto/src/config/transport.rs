@@ -83,6 +83,21 @@ pub struct TransportConfig {
 
     pub(crate) max_remote_nat_traversal_addresses: Option<NonZeroU8>,
 
+    /// **Warren F10d fork audit** — désactive la migration de path déclenchée
+    /// par un packet `off-path` du remote (= packet non-probing avec un
+    /// 4-tuple `network_path` différent de celui du path courant). Le path
+    /// courant reste validé. À utiliser quand le pair n'est PAS attendu de
+    /// migrer (= VPN avec IP publique fixe côté serveur, client stationnaire).
+    ///
+    /// Sans ce flag, le protocole `n0_nat_traversal` envoie des
+    /// `PATH_CHALLENGE` off-path qui peuvent être confondus avec une
+    /// migration spurieuse → invalidation du path principal → `read_datagram`
+    /// bloqué jusqu'au `max_idle_timeout` (60s). Cf.
+    /// `bench/results/2026-05-09_F10c_resolved_round6.md` § F10d.
+    ///
+    /// Default: `false` (= migration permise, comportement RFC 9000 standard).
+    pub(crate) disable_path_migration: bool,
+
     #[cfg(feature = "qlog")]
     pub(crate) qlog_factory: Option<Arc<dyn QlogFactory>>,
 }
@@ -467,6 +482,23 @@ impl TransportConfig {
         self
     }
 
+    /// **Warren F10d** — désactive la migration de path déclenchée par un
+    /// packet `off-path` du remote (= packet non-probing avec `network_path`
+    /// 4-tuple différent du path courant). Sans ce flag, en présence du
+    /// protocole `n0_nat_traversal`, le serveur peut interpréter un
+    /// `PATH_RESPONSE` off-path comme une migration spurieuse → invalider
+    /// le path principal → `read_datagram` ne livre plus rien jusqu'au
+    /// `max_idle_timeout` (60s). Cf.
+    /// `bench/results/2026-05-09_F10c_resolved_round6.md` § F10d.
+    ///
+    /// À activer pour Warren VPN serveur (IP publique fixe, pas de
+    /// migration légitime attendue) et client (tunnel stationnaire).
+    /// Default `false` = comportement RFC 9000 standard.
+    pub fn disable_path_migration(&mut self, value: bool) -> &mut Self {
+        self.disable_path_migration = value;
+        self
+    }
+
     /// Configures qlog capturing by setting a [`QlogFactory`].
     ///
     /// This assigns a [`QlogFactory`] that produces qlog capture configurations for
@@ -582,6 +614,16 @@ impl Default for TransportConfig {
             // nat traversal disabled by default
             max_remote_nat_traversal_addresses: None,
 
+            // Warren F10d fork audit : default `true` dans le fork Warren
+            // (≠ upstream noq-proto qui aurait `false` = RFC 9000 standard).
+            // Iroh `QuicTransportConfigBuilder` ne re-expose pas le setter
+            // `disable_path_migration` ; on inverse le default pour que TOUS
+            // les utilisateurs Warren bénéficient automatiquement du fix
+            // F10d sans changement de code applicatif. Ce vendor noq-fork
+            // est utilisé uniquement via `[patch.crates-io]` warren-pocs,
+            // pas en tant que crate publique upstream — pas d'impact tiers.
+            disable_path_migration: true,
+
             #[cfg(feature = "qlog")]
             qlog_factory: None,
         }
@@ -621,6 +663,7 @@ impl fmt::Debug for TransportConfig {
             default_path_max_idle_timeout,
             default_path_keep_alive_interval,
             max_remote_nat_traversal_addresses,
+            disable_path_migration,
             #[cfg(feature = "qlog")]
             qlog_factory,
         } = self;
@@ -668,7 +711,8 @@ impl fmt::Debug for TransportConfig {
             .field(
                 "max_remote_nat_traversal_addresses",
                 max_remote_nat_traversal_addresses,
-            );
+            )
+            .field("disable_path_migration", disable_path_migration);
         #[cfg(feature = "qlog")]
         s.field("qlog_factory", &qlog_factory.is_some());
 
