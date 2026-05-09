@@ -331,6 +331,30 @@ impl Connection {
         side_args: SideArgs,
         qlog: QlogSink,
     ) -> Self {
+        // Warren F10e fork audit : force multipath QUIC + n0_nat_traversal OFF
+        // si `disable_path_migration` est activé dans le `TransportConfig`.
+        // Sans cela, iroh `QuicTransportConfigBuilder::new()` active multipath
+        // par défaut (`max_concurrent_multipath_paths = 13` +
+        // `max_remote_nat_traversal_addresses = 12`) et ne re-expose AUCUNE
+        // API publique pour désactiver (= verrouillé upstream cf. recherche
+        // F10b Option D). Côté serveur Warren, le multipath déclenche QNT
+        // qui ouvre des paths secondaires non-validables → datagrams livrés
+        // sur des paths abandonnées sont silently droppés (`process_decrypted_packet`
+        // mod.rs:4344-4349). Multipath est négocié SEULEMENT si BOTH peers
+        // supportent (transport param `initial_max_path_id`) → désactiver
+        // côté serveur neutralise pour toute la connexion. Cf.
+        // `bench/results/2026-05-09_F10d_partial_round7.md` § F10e.
+        let config = if config.disable_path_migration
+            && (config.max_concurrent_multipath_paths.is_some()
+                || config.max_remote_nat_traversal_addresses.is_some())
+        {
+            let mut new_config = (*config).clone();
+            new_config.max_concurrent_multipath_paths = None;
+            new_config.max_remote_nat_traversal_addresses = None;
+            Arc::new(new_config)
+        } else {
+            config
+        };
         let pref_addr_cid = side_args.pref_addr_cid();
         let path_validated = side_args.path_validated();
         let connection_side = ConnectionSide::from(side_args);
